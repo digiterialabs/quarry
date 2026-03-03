@@ -31,3 +31,30 @@ jobs:
 
       - name: MCP smoke test
         run: python3 tests/mcp_smoke.py
+
+      - name: Installer smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_root="$(mktemp -d)"
+          mkdir -p "$tmp_root/tools/mcp" "$tmp_root/skills"
+          cp tools/mcp/quarry_mcp_server.py "$tmp_root/tools/mcp/"
+          cp -R skills/quarry-analytics "$tmp_root/skills/"
+          backup_dir="$tmp_root/backups"
+          codex_home="$tmp_root/codex-home"
+
+          python3 scripts/install_integrations.py \
+            --codex --claude --cursor \
+            --repo-root "$tmp_root" \
+            --codex-home "$codex_home" \
+            --backup-dir "$backup_dir"
+
+          python3 scripts/install_integrations.py \
+            --codex --claude --cursor \
+            --repo-root "$tmp_root" \
+            --codex-home "$codex_home" \
+            --backup-dir "$backup_dir"
+
+          test -f "$codex_home/config.toml"
+          test -f "$tmp_root/.mcp.json"
+          test -f "$tmp_root/.cursor/mcp.json"
