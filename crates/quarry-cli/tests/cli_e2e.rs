@@ -47,6 +47,16 @@ fn write_fixture_files_with_data() -> (tempfile::TempDir, String, String, String
     (dir, model, query, data_dir.to_string_lossy().to_string())
 }
 
+fn write_query_by_region(dir: &tempfile::TempDir) -> String {
+    let path = dir.path().join("query_by_region.json");
+    fs::write(
+        &path,
+        include_str!("../../../models/example/query_by_region.json"),
+    )
+    .expect("write query_by_region");
+    path.to_string_lossy().to_string()
+}
+
 #[test]
 fn validate_command_succeeds() {
     let (_dir, model, _query) = write_fixture_files();
@@ -144,4 +154,53 @@ fn local_data_dir_returns_non_empty_rows() {
         .stdout(predicate::str::contains("\"row_count\": 3"))
         .stdout(predicate::str::contains("\"tenant_id\": \"tenant_123\""))
         .stdout(predicate::str::contains("\"revenue\": 100.0"));
+}
+
+#[test]
+fn tenant_isolation_produces_distinct_region_aggregates() {
+    let (dir, model, _query, data_dir) = write_fixture_files_with_data();
+    let query_by_region = write_query_by_region(&dir);
+
+    let mut tenant_123_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    tenant_123_cmd
+        .arg("query")
+        .arg("--model")
+        .arg(&model)
+        .arg("--catalog")
+        .arg("local")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--local-data-dir")
+        .arg(&data_dir)
+        .arg("--input")
+        .arg(&query_by_region);
+
+    tenant_123_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"orders.region\": \"EU\""))
+        .stdout(predicate::str::contains("\"revenue\": 250.0"))
+        .stdout(predicate::str::contains("\"tenant_id\": \"tenant_123\""));
+
+    let mut tenant_999_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    tenant_999_cmd
+        .arg("query")
+        .arg("--model")
+        .arg(&model)
+        .arg("--catalog")
+        .arg("local")
+        .arg("--tenant")
+        .arg("tenant_999")
+        .arg("--local-data-dir")
+        .arg(&data_dir)
+        .arg("--input")
+        .arg(&query_by_region);
+
+    tenant_999_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"orders.region\": \"APAC\""))
+        .stdout(predicate::str::contains("\"revenue\": 500.0"))
+        .stdout(predicate::str::contains("\"tenant_id\": \"tenant_999\""))
+        .stdout(predicate::str::contains("\"orders.region\": \"EU\"").not());
 }
