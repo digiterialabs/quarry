@@ -133,7 +133,7 @@ python3 tests/mcp_smoke.py
 - Codex config parse error:
   - fix `~/.codex/config.toml` and rerun installer
 - Python missing:
-  - install Python 3.11+ and rerun installer
+  - install Python 3.9+ and rerun installer
 - Glue catalog fails:
   - ensure `AWS_REGION` and credentials are configured
 
