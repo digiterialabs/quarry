@@ -1,0 +1,20 @@
+[package]
+name = "quarry-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+datafusion.workspace = true
+iceberg.workspace = true
+iceberg-datafusion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+quarry-core = { path = "../quarry-core" }

@@ -1,0 +1,5 @@
+id,tenant_id,region
+c1,tenant_123,NA
+c2,tenant_123,EU
+c3,tenant_123,NA
+c4,tenant_999,APAC
