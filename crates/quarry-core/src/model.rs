@@ -30,6 +30,7 @@ impl Default for SemanticModel {
 pub struct Entity {
     pub name: String,
     pub table: String,
+    pub physical: Option<PhysicalSource>,
     pub tenant_column: String,
     pub primary_key: String,
     pub relationships: Vec<Relationship>,
@@ -42,6 +43,7 @@ impl Default for Entity {
         Self {
             name: String::new(),
             table: String::new(),
+            physical: None,
             tenant_column: "tenant_id".to_string(),
             primary_key: "id".to_string(),
             relationships: Vec::new(),
@@ -49,6 +51,25 @@ impl Default for Entity {
             measures: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PhysicalSource {
+    pub format: PhysicalFormat,
+    pub metadata_path: String,
+    pub location: String,
+    pub options: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PhysicalFormat {
+    #[default]
+    Auto,
+    Iceberg,
+    Parquet,
+    Csv,
 }
 
 impl Entity {
@@ -258,6 +279,53 @@ impl SemanticModel {
                     message: "Entity table cannot be empty".to_string(),
                     suggestions: vec![],
                 });
+            }
+
+            if let Some(physical) = &entity.physical {
+                match physical.format {
+                    PhysicalFormat::Iceberg => {
+                        if physical.metadata_path.trim().is_empty() {
+                            issues.push(ValidationIssue {
+                                code: "MISSING_ICEBERG_METADATA_PATH",
+                                path: format!("entities.{}.physical.metadata_path", entity.name),
+                                message: "Iceberg physical source requires metadata_path"
+                                    .to_string(),
+                                suggestions: vec![
+                                    "Set physical.metadata_path to metadata.json".to_string()
+                                ],
+                            });
+                        }
+                    }
+                    PhysicalFormat::Parquet | PhysicalFormat::Csv => {
+                        if physical.location.trim().is_empty() {
+                            issues.push(ValidationIssue {
+                                code: "MISSING_PHYSICAL_LOCATION",
+                                path: format!("entities.{}.physical.location", entity.name),
+                                message: "Physical source requires location for csv/parquet"
+                                    .to_string(),
+                                suggestions: vec![
+                                    "Set physical.location to a file path or URI".to_string()
+                                ],
+                            });
+                        }
+                    }
+                    PhysicalFormat::Auto => {
+                        if physical.metadata_path.trim().is_empty()
+                            && physical.location.trim().is_empty()
+                        {
+                            issues.push(ValidationIssue {
+                                code: "MISSING_PHYSICAL_SOURCE",
+                                path: format!("entities.{}.physical", entity.name),
+                                message:
+                                    "Auto physical source requires metadata_path or location"
+                                        .to_string(),
+                                suggestions: vec![
+                                    "Set physical.metadata_path (iceberg) or physical.location (csv/parquet)".to_string(),
+                                ],
+                            });
+                        }
+                    }
+                }
             }
 
             let mut seen_dims = HashSet::new();

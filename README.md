@@ -1,32 +1,44 @@
 # Quarry
 
-Quarry is a CLI-first Rust analytics engine that accepts semantic JSON queries, resolves them into DataFusion `LogicalPlan`s, enforces tenant isolation, and returns versioned JSON envelopes.
+Quarry is a Rust-native local analytics engine that sits between AI agents and your lakehouse.
 
-## v0.1.0 Includes
+Agents query a semantic layer (metrics, dimensions, entities), not raw tables. Quarry resolves those requests into DataFusion plans, injects tenant isolation, and executes against local files or Iceberg table metadata (including `s3://...` metadata locations).
 
-- `quarry` CLI: `validate`, `query`, `explain`
-- semantic model validation from YAML
-- semantic query execution from JSON (no SQL input)
-- row-level tenant isolation
-- local + glue catalog adapters
-- MCP server for Codex, Claude Code, and Cursor
+It is designed for ephemeral, per-query compute: no long-running cluster and no shared always-on control plane.
+
+## Why Quarry
+
+- Semantic contract for agents: JSON metrics/dimensions/filters, no SQL prompt fragility
+- Safe-by-default tenant isolation injection in planning
+- Local-first execution with portable binaries
+- MCP tools for Codex, Claude Code, and Cursor
+- Plan-level observability in every response envelope
+
+## v0.1.0 Capabilities
+
+- CLI commands:
+  - `quarry validate --model <path>`
+  - `quarry query --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file> --format json`
+  - `quarry explain --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file>`
+- Semantic model in YAML (`entities`, `dimensions`, `measures`, `metrics`)
+- Semantic query JSON input contract
+- DataFusion logical/optimized/physical planning
+- Row-level tenant isolation
+- Local adapter sources:
+  - CSV/Parquet files
+  - Iceberg static table metadata (via `physical.format: iceberg` + `metadata_path`)
+- Glue adapter baseline with AWS config enforcement
+- Versioned response envelopes (`schema_version: "v1"`)
 
 ## Installation
 
-### Option 1: GitHub Release binaries
+### Option 1: GitHub Releases binaries
 
-Download the matching archive from [GitHub Releases](https://github.com/digiterialabs/quarry/releases), then unpack and run:
+Download for your platform from [GitHub Releases](https://github.com/digiterialabs/quarry/releases), then run:
 
 ```bash
 ./quarry --help
 ```
-
-Release artifacts are published for:
-
-- Linux x86_64
-- macOS arm64
-- macOS x86_64
-- Windows x86_64
 
 ### Option 2: Cargo from git
 
@@ -34,43 +46,12 @@ Release artifacts are published for:
 cargo install --git https://github.com/digiterialabs/quarry.git --bin quarry --locked
 ```
 
-## 5-Minute Quickstart
-
-From repo root:
+## 5-Minute Local Quickstart
 
 ```bash
-cargo run -p quarry-cli -- validate --model models/example/model.yml
+quarry validate --model models/example/model.yml
 
-cargo run -p quarry-cli -- query \
-  --model models/example/model.yml \
-  --catalog local \
-  --tenant tenant_123 \
-  --local-data-dir models/example/data \
-  --input models/example/query.json
-
-cargo run -p quarry-cli -- explain \
-  --model models/example/model.yml \
-  --catalog local \
-  --tenant tenant_123 \
-  --local-data-dir models/example/data \
-  --input models/example/query.json
-```
-
-Example multi-tenant check:
-
-```bash
-cargo run -p quarry-cli -- query \
-  --model models/example/model.yml \
-  --catalog local \
-  --tenant tenant_999 \
-  --local-data-dir models/example/data \
-  --input models/example/query.json
-```
-
-Revenue by region for `tenant_123`:
-
-```bash
-cargo run -p quarry-cli -- query \
+quarry query \
   --model models/example/model.yml \
   --catalog local \
   --tenant tenant_123 \
@@ -78,44 +59,70 @@ cargo run -p quarry-cli -- query \
   --input models/example/query_by_region.json
 ```
 
-## AI Tool Integrations (Codex + Claude Code + Cursor)
+Expected aggregate for `tenant_123`:
 
-Use the single installer:
+- `EU`: `250.0`
+- `NA`: `100.0`
+
+## Iceberg on S3/MinIO (Static Metadata Path)
+
+Define physical source on entities in model YAML:
+
+```yaml
+entities:
+  - name: orders
+    table: orders
+    physical:
+      format: iceberg
+      metadata_path: s3://warehouse/orders/metadata/v2.metadata.json
+      options:
+        s3.endpoint: http://localhost:9000
+        s3.path-style-access: "true"
+```
+
+Set storage credentials/env (example):
+
+```bash
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+export QUARRY_S3_ENDPOINT=http://localhost:9000
+export QUARRY_S3_PATH_STYLE_ACCESS=true
+```
+
+Optional bulk IO props override:
+
+```bash
+export QUARRY_ICEBERG_IO_PROPS_JSON='{"s3.region":"us-east-1"}'
+```
+
+Then run `quarry query` normally.
+
+## MCP Integrations (Codex + Claude Code + Cursor)
+
+One installer for all three:
 
 ```bash
 python3 scripts/install_integrations.py --codex --claude --cursor
 ```
 
-This installer safely patches/writes config with backups and is idempotent.
-
-Integration guides:
+Docs:
 
 - [Codex](docs/integrations/codex.md)
 - [Claude Code](docs/integrations/claude-code.md)
 - [Cursor](docs/integrations/cursor.md)
 
-## MCP Server
+## Observability in Query Meta
 
-Quarry MCP wrapper path:
+Each success envelope now includes:
 
-`tools/mcp/quarry_mcp_server.py`
-
-Exposed tools:
-
-- `quarry_validate`
-- `quarry_query`
-- `quarry_explain`
-
-Environment overrides:
-
-- `QUARRY_BIN`: path to compiled `quarry` binary (fast path)
-- `QUARRY_REPO_ROOT`: explicit repository root for command execution
-
-## CLI Surface
-
-- `quarry validate --model <path>`
-- `quarry query --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file> --format json`
-- `quarry explain --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file>`
+- `planning_ms`, `optimization_ms`, `physical_planning_ms`, `execution_ms`
+- `generated_sql` (logical plan rendering)
+- `optimized_plan`
+- `physical_plan`
+- `logical_plan_hash`, `optimized_plan_hash`, `physical_plan_hash`
+- `sandbox_id`, `execution_mode`
+- `table_bindings` (entity/table/source mapping)
 
 ## Development
 
@@ -125,17 +132,11 @@ cargo test -q
 python3 tests/mcp_smoke.py
 ```
 
-## Troubleshooting
+## Current Boundaries
 
-- MCP server does not appear:
-  - rerun installer with target flag(s)
-  - restart/reopen the IDE after config changes
-- Codex config parse error:
-  - fix `~/.codex/config.toml` and rerun installer
-- Python missing:
-  - install Python 3.9+ and rerun installer
-- Glue catalog fails:
-  - ensure `AWS_REGION` and credentials are configured
+- Query execution path is single-entity scoped today for dimensions/filters
+- Glue adapter currently enforces AWS config and uses static-source registration boundary
+- Path-level tenant isolation remains out of scope for v0.1.x
 
 ## License
 
