@@ -1,0 +1,52 @@
+schema_version: v1
+entities:
+  - name: orders
+    table: orders
+    tenant_column: tenant_id
+    primary_key: id
+    relationships:
+      - to: customers
+        kind: many_to_one
+        local_key: customer_id
+        remote_key: id
+    dimensions:
+      - name: created_at
+        column: created_at
+        kind: temporal
+        data_type: timestamp
+      - name: status
+        column: status
+        kind: categorical
+        data_type: utf8
+      - name: region
+        column: region
+        kind: categorical
+        data_type: utf8
+    measures:
+      - name: revenue_raw
+        column: amount
+        agg: sum
+        data_type: float64
+  - name: customers
+    table: customers
+    tenant_column: tenant_id
+    primary_key: id
+    dimensions:
+      - name: region
+        column: region
+        kind: categorical
+        data_type: utf8
+    measures:
+      - name: customer_count
+        column: id
+        agg: count
+        data_type: int64
+metrics:
+  - name: revenue
+    kind: simple
+    entity: orders
+    measure: revenue_raw
+    filter:
+      field: orders.status
+      op: eq
+      value: completed

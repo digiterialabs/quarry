@@ -1,0 +1,7 @@
+{
+  "metrics": ["revenue"],
+  "dimensions": [{ "name": "orders.region" }],
+  "filters": [{ "field": "orders.status", "op": "eq", "value": "completed" }],
+  "order_by": [{ "field": "revenue", "direction": "desc" }],
+  "limit": 1000
+}

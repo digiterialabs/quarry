@@ -1,0 +1,4 @@
+interface:
+  display_name: "Quarry Analytics"
+  short_description: "Intent routing for Quarry semantic analytics via MCP."
+  default_prompt: "Use Quarry MCP tools to validate models and execute semantic analytics queries."
