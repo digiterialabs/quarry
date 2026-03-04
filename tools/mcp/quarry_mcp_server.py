@@ -5,6 +5,10 @@ Provides tools:
 - quarry_validate
 - quarry_query
 - quarry_explain
+- quarry_collection_create
+- quarry_collection_list
+- quarry_sync
+- quarry_search
 """
 
 from __future__ import annotations
@@ -118,6 +122,71 @@ def _tool_definitions() -> list[Dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "quarry_collection_create",
+            "description": "Create a tenant-scoped Quarry context collection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "context_dir": {"type": "string"},
+                },
+                "required": ["tenant_id", "name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "quarry_collection_list",
+            "description": "List Quarry context collections for a tenant.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string"},
+                    "context_dir": {"type": "string"},
+                },
+                "required": ["tenant_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "quarry_sync",
+            "description": (
+                "Sync documents into a tenant collection via connector. "
+                "Provide config_json or config_file."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string"},
+                    "collection": {"type": "string"},
+                    "connector": {"type": "string", "enum": ["filesystem", "url_list"]},
+                    "config_json": {"type": "object"},
+                    "config_file": {"type": "string"},
+                    "context_dir": {"type": "string"},
+                },
+                "required": ["tenant_id", "collection", "connector"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "quarry_search",
+            "description": "Search tenant-scoped context chunks in a collection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string"},
+                    "collection": {"type": "string"},
+                    "query": {"type": "string"},
+                    "top_k": {"type": "integer", "minimum": 1},
+                    "hybrid": {"type": "string", "enum": ["on", "off"]},
+                    "context_dir": {"type": "string"},
+                },
+                "required": ["tenant_id", "collection", "query"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -163,22 +232,49 @@ def _tool_error(code: str, message: str, details: Optional[Dict[str, Any]] = Non
 
 
 def _query_input_file(arguments: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-    query_file = arguments.get("query_file")
-    query_json = arguments.get("query_json")
+    return _json_input_file(
+        arguments=arguments,
+        file_key="query_file",
+        json_key="query_json",
+        temp_prefix="quarry-mcp-query-",
+        missing_message="Missing query input: provide query_json or query_file",
+    )
 
-    if query_file and query_json:
-        return None, "Provide only one of query_file or query_json"
 
-    if query_file:
-        return str(query_file), None
+def _sync_config_input_file(arguments: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    return _json_input_file(
+        arguments=arguments,
+        file_key="config_file",
+        json_key="config_json",
+        temp_prefix="quarry-mcp-sync-",
+        missing_message="Missing sync config: provide config_json or config_file",
+    )
 
-    if query_json is None:
-        return None, "Missing query input: provide query_json or query_file"
 
-    fd, tmp_path = tempfile.mkstemp(prefix="quarry-mcp-query-", suffix=".json")
+def _json_input_file(
+    *,
+    arguments: Dict[str, Any],
+    file_key: str,
+    json_key: str,
+    temp_prefix: str,
+    missing_message: str,
+) -> tuple[Optional[str], Optional[str]]:
+    input_file = arguments.get(file_key)
+    input_json = arguments.get(json_key)
+
+    if input_file and input_json:
+        return None, f"Provide only one of {file_key} or {json_key}"
+
+    if input_file:
+        return str(input_file), None
+
+    if input_json is None:
+        return None, missing_message
+
+    fd, tmp_path = tempfile.mkstemp(prefix=temp_prefix, suffix=".json")
     os.close(fd)
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(query_json, f)
+        json.dump(input_json, f)
     return tmp_path, None
 
 
@@ -244,6 +340,136 @@ def _handle_tool_call(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 except OSError:
                     pass
 
+        if proc.returncode != 0:
+            return _error_text(proc.stderr.strip() or proc.stdout.strip())
+        return _success_text(proc.stdout.strip())
+
+    if name == "quarry_collection_create":
+        tenant_id = arguments.get("tenant_id")
+        collection_name = arguments.get("name")
+        if not tenant_id or not collection_name:
+            return _tool_error(
+                "MISSING_ARGUMENT",
+                "quarry_collection_create requires tenant_id and name",
+                {"required": ["tenant_id", "name"]},
+            )
+
+        args = [
+            "collection",
+            "create",
+            "--tenant",
+            str(tenant_id),
+            "--name",
+            str(collection_name),
+        ]
+        description = arguments.get("description")
+        context_dir = arguments.get("context_dir")
+        if description:
+            args.extend(["--description", str(description)])
+        if context_dir:
+            args.extend(["--context-dir", str(context_dir)])
+
+        proc = _run_quarry(args)
+        if proc.returncode != 0:
+            return _error_text(proc.stderr.strip() or proc.stdout.strip())
+        return _success_text(proc.stdout.strip())
+
+    if name == "quarry_collection_list":
+        tenant_id = arguments.get("tenant_id")
+        if not tenant_id:
+            return _tool_error(
+                "MISSING_ARGUMENT",
+                "quarry_collection_list requires tenant_id",
+                {"required": ["tenant_id"]},
+            )
+        args = ["collection", "list", "--tenant", str(tenant_id)]
+        context_dir = arguments.get("context_dir")
+        if context_dir:
+            args.extend(["--context-dir", str(context_dir)])
+
+        proc = _run_quarry(args)
+        if proc.returncode != 0:
+            return _error_text(proc.stderr.strip() or proc.stdout.strip())
+        return _success_text(proc.stdout.strip())
+
+    if name == "quarry_sync":
+        tenant_id = arguments.get("tenant_id")
+        collection = arguments.get("collection")
+        connector = arguments.get("connector")
+        context_dir = arguments.get("context_dir")
+        if not tenant_id or not collection or not connector:
+            return _tool_error(
+                "MISSING_ARGUMENT",
+                "quarry_sync requires tenant_id, collection, and connector",
+                {"required": ["tenant_id", "collection", "connector"]},
+            )
+
+        config_path, config_err = _sync_config_input_file(arguments)
+        if config_err:
+            return _tool_error(
+                "INVALID_INPUT",
+                f"quarry_sync: {config_err}",
+                {"accepted": ["config_json", "config_file"]},
+            )
+
+        args = [
+            "sync",
+            "--tenant",
+            str(tenant_id),
+            "--collection",
+            str(collection),
+            "--connector",
+            str(connector),
+            "--config",
+            str(config_path),
+        ]
+        if context_dir:
+            args.extend(["--context-dir", str(context_dir)])
+
+        try:
+            proc = _run_quarry(args)
+        finally:
+            if arguments.get("config_json") is not None and config_path:
+                try:
+                    os.remove(config_path)
+                except OSError:
+                    pass
+
+        if proc.returncode != 0:
+            return _error_text(proc.stderr.strip() or proc.stdout.strip())
+        return _success_text(proc.stdout.strip())
+
+    if name == "quarry_search":
+        tenant_id = arguments.get("tenant_id")
+        collection = arguments.get("collection")
+        query = arguments.get("query")
+        if not tenant_id or not collection or not query:
+            return _tool_error(
+                "MISSING_ARGUMENT",
+                "quarry_search requires tenant_id, collection, and query",
+                {"required": ["tenant_id", "collection", "query"]},
+            )
+
+        args = [
+            "search",
+            "--tenant",
+            str(tenant_id),
+            "--collection",
+            str(collection),
+            "--query",
+            str(query),
+        ]
+        top_k = arguments.get("top_k")
+        hybrid = arguments.get("hybrid")
+        context_dir = arguments.get("context_dir")
+        if top_k is not None:
+            args.extend(["--top-k", str(top_k)])
+        if hybrid is not None:
+            args.extend(["--hybrid", str(hybrid)])
+        if context_dir:
+            args.extend(["--context-dir", str(context_dir)])
+
+        proc = _run_quarry(args)
         if proc.returncode != 0:
             return _error_text(proc.stderr.strip() or proc.stdout.strip())
         return _success_text(proc.stdout.strip())

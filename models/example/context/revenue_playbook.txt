@@ -1,0 +1,5 @@
+Revenue playbook for tenant_123:
+
+- Prioritize enterprise opportunities in EMEA and NA.
+- Track monthly pipeline conversion and completed order revenue.
+- Review discount approvals in quarterly business reviews.

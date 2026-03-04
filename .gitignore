@@ -4,3 +4,4 @@
 *.tmp
 .mcp.json
 .cursor/mcp.json
+.quarry-demo-context/

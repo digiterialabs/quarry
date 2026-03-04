@@ -1,0 +1,25 @@
+{
+  "name": "threejs-mcp",
+  "version": "0.4.0",
+  "type": "module",
+  "description": "Quarry MCP HTTP server for CopilotKit demo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/modelcontextprotocol/ext-apps",
+    "directory": "examples/threejs-server"
+  },
+  "license": "MIT",
+  "main": "server.mjs",
+  "files": [
+    "server.mjs"
+  ],
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.0",
+    "cors": "^2.8.5",
+    "zod": "^4.1.13"
+  }
+}

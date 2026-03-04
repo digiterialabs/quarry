@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quarry Chat Demo</title>
+    <style>
+      :root {
+        --bg: #0c111b;
+        --panel: #101828;
+        --panel-2: #1f2937;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #22c55e;
+        --user: #0f766e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(1200px 600px at 100% 0%, #1f2937, var(--bg));
+        color: var(--text);
+      }
+      .app {
+        max-width: 900px;
+        margin: 0 auto;
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+      .header {
+        padding: 20px;
+        border-bottom: 1px solid #243041;
+        background: rgba(16, 24, 40, 0.7);
+        backdrop-filter: blur(6px);
+      }
+      .header h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+      .header p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .messages {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow-y: auto;
+      }
+      .bubble {
+        border-radius: 14px;
+        padding: 12px 14px;
+        max-width: 85%;
+        line-height: 1.45;
+        border: 1px solid #243041;
+      }
+      .assistant {
+        background: var(--panel);
+        align-self: flex-start;
+      }
+      .user {
+        background: var(--user);
+        align-self: flex-end;
+        border-color: #0d9488;
+      }
+      .meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .payload {
+        margin-top: 10px;
+        background: #0b1220;
+        border-radius: 10px;
+        border: 1px solid #243041;
+      }
+      .payload summary {
+        cursor: pointer;
+        padding: 8px 10px;
+        color: #93c5fd;
+      }
+      .payload pre {
+        margin: 0;
+        padding: 10px;
+        max-height: 320px;
+        overflow: auto;
+        color: #d1d5db;
+        font-size: 12px;
+      }
+      .composer {
+        border-top: 1px solid #243041;
+        background: rgba(16, 24, 40, 0.85);
+        padding: 14px;
+      }
+      .row {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 140px 1fr auto;
+      }
+      input, button {
+        border-radius: 10px;
+        border: 1px solid #334155;
+        background: var(--panel-2);
+        color: var(--text);
+        font-size: 14px;
+      }
+      input { padding: 10px; width: 100%; }
+      button {
+        padding: 10px 14px;
+        background: #166534;
+        border-color: #22c55e;
+        cursor: pointer;
+      }
+      .chips {
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .chip {
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid #334155;
+        background: #0b1220;
+        color: #cbd5e1;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      @media (max-width: 720px) {
+        .row { grid-template-columns: 1fr; }
+        .bubble { max-width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="header">
+        <h1>Quarry Chat Demo</h1>
+        <p>Try analytics + context retrieval through one chat interface.</p>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="composer">
+        <div class="row">
+          <input id="tenant" value="tenant_123" aria-label="Tenant ID" />
+          <input id="message" placeholder="Ask something like: revenue by region" aria-label="Message" />
+          <button id="send">Send</button>
+        </div>
+        <div class="chips">
+          <button class="chip" data-msg="validate model">validate model</button>
+          <button class="chip" data-msg="revenue by region for tenant_123">revenue by region</button>
+          <button class="chip" data-msg="explain revenue query for tenant_123">explain query</button>
+          <button class="chip" data-msg="search context for revenue playbook for tenant_123">search context</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const messagesEl = document.getElementById("messages");
+      const messageInput = document.getElementById("message");
+      const tenantInput = document.getElementById("tenant");
+      const sendBtn = document.getElementById("send");
+
+      function addBubble(kind, text, opts = {}) {
+        const el = document.createElement("div");
+        el.className = `bubble ${kind}`;
+        el.textContent = text;
+
+        if (opts.meta) {
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          meta.textContent = opts.meta;
+          el.appendChild(meta);
+        }
+
+        if (opts.payload) {
+          const details = document.createElement("details");
+          details.className = "payload";
+          const summary = document.createElement("summary");
+          summary.textContent = "Raw Quarry payload";
+          const pre = document.createElement("pre");
+          pre.textContent = JSON.stringify(opts.payload, null, 2);
+          details.appendChild(summary);
+          details.appendChild(pre);
+          el.appendChild(details);
+        }
+
+        messagesEl.appendChild(el);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      async function sendMessage(text) {
+        const msg = text.trim();
+        if (!msg) return;
+        addBubble("user", msg);
+        messageInput.value = "";
+        sendBtn.disabled = true;
+
+        try {
+          const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: msg,
+              tenant_id: tenantInput.value.trim() || "tenant_123",
+            }),
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            addBubble("assistant", `Error: ${data.error || "unknown error"}`);
+            return;
+          }
+
+          addBubble("assistant", data.reply, {
+            meta: `intent=${data.intent} tenant=${data.tenant_id}`,
+            payload: data.quarry_payload,
+          });
+        } catch (err) {
+          addBubble("assistant", `Request failed: ${err.message}`);
+        } finally {
+          sendBtn.disabled = false;
+          messageInput.focus();
+        }
+      }
+
+      sendBtn.addEventListener("click", () => sendMessage(messageInput.value));
+      messageInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") sendMessage(messageInput.value);
+      });
+      document.querySelectorAll(".chip").forEach((btn) => {
+        btn.addEventListener("click", () => sendMessage(btn.dataset.msg || ""));
+      });
+
+      addBubble(
+        "assistant",
+        "Demo ready. Try one of the quick prompts below.",
+        { meta: "commands route to quarry validate/query/explain/search" }
+      );
+    </script>
+  </body>
+</html>

@@ -3,14 +3,16 @@
 
 Checks:
 - initialize handshake
-- tools/list contains 3 expected tools
+- tools/list contains expected tools
 - tools/call quarry_validate succeeds on example model
 - tools/call quarry_query succeeds on example query fixture
+- tools/call quarry_collection_create/list/sync/search succeeds on local fixture docs
 """
 
 from __future__ import annotations
 
 import json
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -82,7 +84,16 @@ def main() -> int:
         send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         tools = recv(proc)
         names = {t["name"] for t in tools["result"]["tools"]}
-        expect(names == {"quarry_validate", "quarry_query", "quarry_explain"}, "tools/list mismatch")
+        expected = {
+            "quarry_validate",
+            "quarry_query",
+            "quarry_explain",
+            "quarry_collection_create",
+            "quarry_collection_list",
+            "quarry_sync",
+            "quarry_search",
+        }
+        expect(names == expected, f"tools/list mismatch: {names}")
 
         send(
             proc,
@@ -143,6 +154,103 @@ def main() -> int:
         meta = query_payload.get("meta", {})
         expect(meta.get("tenant_id") == "tenant_123", "tenant_id meta mismatch")
         expect(meta.get("catalog") == "local", "catalog meta mismatch")
+
+        with tempfile.TemporaryDirectory(prefix="quarry-mcp-context-") as tmpdir:
+            context_dir = Path(tmpdir) / "context"
+            docs_dir = Path(tmpdir) / "docs"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            (docs_dir / "sales.txt").write_text(
+                "Revenue playbook for EMEA and NA enterprise growth.",
+                encoding="utf-8",
+            )
+            sync_config_path = Path(tmpdir) / "sync_config.json"
+            sync_config_path.write_text(
+                json.dumps({"paths": [str(docs_dir)], "recursive": True, "extensions": ["txt"]}),
+                encoding="utf-8",
+            )
+
+            send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "quarry_collection_create",
+                        "arguments": {
+                            "tenant_id": "tenant_123",
+                            "name": "sales_docs",
+                            "context_dir": str(context_dir),
+                        },
+                    },
+                },
+            )
+            create = recv(proc)
+            expect("result" in create, "collection create missing result")
+            expect(not create["result"].get("isError", False), "collection create errored")
+
+            send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "quarry_collection_list",
+                        "arguments": {
+                            "tenant_id": "tenant_123",
+                            "context_dir": str(context_dir),
+                        },
+                    },
+                },
+            )
+            listed = recv(proc)
+            expect("result" in listed, "collection list missing result")
+            expect(not listed["result"].get("isError", False), "collection list errored")
+
+            send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "quarry_sync",
+                        "arguments": {
+                            "tenant_id": "tenant_123",
+                            "collection": "sales_docs",
+                            "connector": "filesystem",
+                            "config_file": str(sync_config_path),
+                            "context_dir": str(context_dir),
+                        },
+                    },
+                },
+            )
+            synced = recv(proc)
+            expect("result" in synced, "sync missing result")
+            expect(not synced["result"].get("isError", False), "sync errored")
+
+            send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 8,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "quarry_search",
+                        "arguments": {
+                            "tenant_id": "tenant_123",
+                            "collection": "sales_docs",
+                            "query": "revenue",
+                            "top_k": 3,
+                            "context_dir": str(context_dir),
+                        },
+                    },
+                },
+            )
+            searched = recv(proc)
+            expect("result" in searched, "search missing result")
+            expect(not searched["result"].get("isError", False), "search errored")
 
         print("MCP smoke test passed")
         return 0

@@ -115,11 +115,35 @@ Expected response metadata includes:
 
 ## Pass/fail checklist
 
-- Claude Code can see Quarry MCP tools (`quarry_validate`, `quarry_query`, `quarry_explain`)
+- Claude Code can see Quarry MCP tools:
+  - `quarry_validate`, `quarry_query`, `quarry_explain`
+  - `quarry_collection_create`, `quarry_collection_list`, `quarry_sync`, `quarry_search`
 - `quarry_validate` returns `status: ok`
 - `quarry_query` returns `status: ok`
 - Query rows match expected values exactly
 - Meta shows `tenant_id: tenant_123` and `catalog: local`
+
+## Optional context retrieval flow
+
+If you also want retrieval-style context for the same tenant, run:
+
+```text
+Use these Quarry MCP tools in order:
+1) quarry_collection_create { "tenant_id": "tenant_123", "name": "sales_docs" }
+2) quarry_sync {
+  "tenant_id": "tenant_123",
+  "collection": "sales_docs",
+  "connector": "filesystem",
+  "config_json": { "paths": ["models/example/context"], "recursive": true, "extensions": ["txt","md"] }
+}
+3) quarry_search {
+  "tenant_id": "tenant_123",
+  "collection": "sales_docs",
+  "query": "revenue playbook",
+  "top_k": 5
+}
+Return raw JSON plus a concise summary.
+```
 
 ## Troubleshooting
 

@@ -21,6 +21,10 @@ It is designed for ephemeral, per-query compute: no long-running cluster and no 
   - `quarry query --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file> --format json`
   - `quarry explain --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file>`
   - `quarry serve --model <path> [--catalog <local|glue>] [--local-data-dir <path>] [--host 127.0.0.1] [--port 4000]`
+  - `quarry collection create --tenant <id> --name <collection> [--description <text>] [--context-dir <path>]`
+  - `quarry collection list --tenant <id> [--context-dir <path>]`
+  - `quarry sync --tenant <id> --collection <name> --connector <filesystem|url_list> --config <json-file> [--context-dir <path>]`
+  - `quarry search --tenant <id> --collection <name> --query <text> [--top-k <n>] [--hybrid on|off] [--context-dir <path>]`
 - Semantic model in YAML (`entities`, `dimensions`, `measures`, `metrics`)
 - Semantic query JSON input contract
 - DataFusion logical/optimized/physical planning
@@ -181,6 +185,76 @@ python3 scripts/install_integrations.py --claude
 Then ask Claude Code to run the Quarry revenue-by-region quickstart for `tenant_123`.
 Detailed walkthrough: [docs/integrations/claude-code.md](docs/integrations/claude-code.md).  
 Expected result teaser: `EU 250.0`, `NA 100.0`.
+
+## Context Collections (v0.2 groundwork)
+
+Create a tenant-scoped collection in local context storage:
+
+```bash
+quarry collection create \
+  --tenant tenant_123 \
+  --name sales_docs \
+  --description "Sales collateral and playbooks"
+```
+
+List collections for a tenant:
+
+```bash
+quarry collection list --tenant tenant_123
+```
+
+Sync documents from filesystem into a collection:
+
+```bash
+cat > /tmp/quarry-sync.json <<'JSON'
+{
+  "paths": ["models/example/context"],
+  "recursive": true,
+  "extensions": ["txt", "md"]
+}
+JSON
+
+quarry sync \
+  --tenant tenant_123 \
+  --collection sales_docs \
+  --connector filesystem \
+  --config /tmp/quarry-sync.json
+```
+
+Search tenant-scoped chunks:
+
+```bash
+quarry search \
+  --tenant tenant_123 \
+  --collection sales_docs \
+  --query "revenue playbook" \
+  --top-k 5
+```
+
+By default, context metadata is stored under `~/.quarry/context` (override with `--context-dir`
+or `QUARRY_CONTEXT_DIR`).
+
+## Demo Chat App
+
+Try Quarry in an interactive local chat UI:
+
+```bash
+python3 examples/chat-app/app.py --port 8090
+```
+
+Then open `http://127.0.0.1:8090`.
+
+Demo docs and prompts: [examples/chat-app/README.md](examples/chat-app/README.md).
+
+## CopilotKit UI Demo
+
+If you want CopilotKit as the UI layer, use:
+
+- [examples/copilotkit-chat/README.md](examples/copilotkit-chat/README.md)
+
+This demo runs a CopilotKit web chat app backed by a local HTTP MCP server that calls Quarry CLI
+tools.
+It defaults to local Ollama inference (no OpenAI key required).
 
 ## Observability in Query Meta
 

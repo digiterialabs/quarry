@@ -3,6 +3,7 @@ members = [
   "crates/quarry-core",
   "crates/quarry-exec",
   "crates/quarry-cli",
+  "crates/quarry-context",
 ]
 resolver = "2"
 
@@ -27,4 +28,5 @@ thiserror = "2.0"
 tokio = { version = "1.47", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "serde"] }

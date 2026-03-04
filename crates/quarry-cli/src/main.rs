@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -10,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::{Parser, Subcommand};
+use quarry_context::{ConnectorKind, ContextStore, QuarryContextError};
 use quarry_core::{QuarryCoreError, SemanticModel, SemanticQuery};
 use quarry_exec::{
     execute_query, explain_query, match_pre_aggregation, materialize_pre_aggregation, CatalogKind,
@@ -71,6 +73,56 @@ enum Commands {
         host: String,
         #[arg(long, default_value_t = 4000)]
         port: u16,
+    },
+    Collection {
+        #[command(subcommand)]
+        command: CollectionCommands,
+    },
+    Sync {
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        collection: String,
+        #[arg(long)]
+        connector: String,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long, env = "QUARRY_CONTEXT_DIR")]
+        context_dir: Option<PathBuf>,
+    },
+    Search {
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        collection: String,
+        #[arg(long)]
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        top_k: usize,
+        #[arg(long, default_value = "off")]
+        hybrid: String,
+        #[arg(long, env = "QUARRY_CONTEXT_DIR")]
+        context_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CollectionCommands {
+    Create {
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, env = "QUARRY_CONTEXT_DIR")]
+        context_dir: Option<PathBuf>,
+    },
+    List {
+        #[arg(long)]
+        tenant: String,
+        #[arg(long, env = "QUARRY_CONTEXT_DIR")]
+        context_dir: Option<PathBuf>,
     },
 }
 
@@ -196,6 +248,33 @@ async fn main() {
             host,
             port,
         } => handle_serve(model, catalog, local_data_dir, host, port).await,
+        Commands::Collection { command } => match command {
+            CollectionCommands::Create {
+                tenant,
+                name,
+                description,
+                context_dir,
+            } => handle_collection_create(tenant, name, description, context_dir).await,
+            CollectionCommands::List {
+                tenant,
+                context_dir,
+            } => handle_collection_list(tenant, context_dir).await,
+        },
+        Commands::Sync {
+            tenant,
+            collection,
+            connector,
+            config,
+            context_dir,
+        } => handle_sync(tenant, collection, connector, config, context_dir).await,
+        Commands::Search {
+            tenant,
+            collection,
+            query,
+            top_k,
+            hybrid,
+            context_dir,
+        } => handle_search(tenant, collection, query, top_k, hybrid, context_dir).await,
     };
 
     if let Err(err) = result {
@@ -210,6 +289,138 @@ async fn handle_validate(model_path: PathBuf) -> Result<(), QuarryExecError> {
         "status": "ok",
         "data": { "validated": true },
         "meta": { "model": model_path.display().to_string() }
+    });
+    print_json(&output)?;
+    Ok(())
+}
+
+async fn handle_collection_create(
+    tenant: String,
+    name: String,
+    description: Option<String>,
+    context_dir: Option<PathBuf>,
+) -> Result<(), QuarryExecError> {
+    let context_dir = resolve_context_dir(context_dir)?;
+    let store = ContextStore::open(&context_dir).map_err(map_context_error)?;
+    let collection = store
+        .create_collection(tenant.as_str(), name.as_str(), description.as_deref())
+        .map_err(map_context_error)?;
+
+    let output = serde_json::json!({
+        "schema_version": "v1",
+        "status": "ok",
+        "data": { "collection": collection },
+        "meta": {
+            "request_id": Uuid::new_v4().to_string(),
+            "context_dir": context_dir.display().to_string(),
+            "db_path": store.db_path().display().to_string()
+        }
+    });
+    print_json(&output)?;
+    Ok(())
+}
+
+async fn handle_collection_list(
+    tenant: String,
+    context_dir: Option<PathBuf>,
+) -> Result<(), QuarryExecError> {
+    let context_dir = resolve_context_dir(context_dir)?;
+    let store = ContextStore::open(&context_dir).map_err(map_context_error)?;
+    let collections = store
+        .list_collections(tenant.as_str())
+        .map_err(map_context_error)?;
+
+    let output = serde_json::json!({
+        "schema_version": "v1",
+        "status": "ok",
+        "data": { "collections": collections },
+        "meta": {
+            "request_id": Uuid::new_v4().to_string(),
+            "tenant_id": tenant,
+            "context_dir": context_dir.display().to_string(),
+            "db_path": store.db_path().display().to_string()
+        }
+    });
+    print_json(&output)?;
+    Ok(())
+}
+
+async fn handle_sync(
+    tenant: String,
+    collection: String,
+    connector: String,
+    config_path: PathBuf,
+    context_dir: Option<PathBuf>,
+) -> Result<(), QuarryExecError> {
+    let connector_kind = connector
+        .parse::<ConnectorKind>()
+        .map_err(map_context_error)?;
+    let config_json: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&config_path)
+            .map_err(|error| {
+                QuarryExecError::Config(format!("{}: {error}", config_path.display()))
+            })?
+            .as_str(),
+    )
+    .map_err(|error| QuarryExecError::Config(format!("{}: {error}", config_path.display())))?;
+
+    let context_dir = resolve_context_dir(context_dir)?;
+    let store = ContextStore::open(&context_dir).map_err(map_context_error)?;
+    let summary = store
+        .sync_collection(
+            tenant.as_str(),
+            collection.as_str(),
+            connector_kind,
+            &config_json,
+        )
+        .map_err(map_context_error)?;
+
+    let output = serde_json::json!({
+        "schema_version": "v1",
+        "status": "ok",
+        "data": { "sync": summary },
+        "meta": {
+            "request_id": Uuid::new_v4().to_string(),
+            "context_dir": context_dir.display().to_string(),
+            "db_path": store.db_path().display().to_string(),
+            "config_path": config_path.display().to_string(),
+        }
+    });
+    print_json(&output)?;
+    Ok(())
+}
+
+async fn handle_search(
+    tenant: String,
+    collection: String,
+    query: String,
+    top_k: usize,
+    hybrid: String,
+    context_dir: Option<PathBuf>,
+) -> Result<(), QuarryExecError> {
+    let hybrid_enabled = parse_hybrid(hybrid.as_str())?;
+    let context_dir = resolve_context_dir(context_dir)?;
+    let store = ContextStore::open(&context_dir).map_err(map_context_error)?;
+    let result = store
+        .search(
+            tenant.as_str(),
+            collection.as_str(),
+            query.as_str(),
+            top_k,
+            hybrid_enabled,
+        )
+        .map_err(map_context_error)?;
+
+    let output = serde_json::json!({
+        "schema_version": "v1",
+        "status": "ok",
+        "data": result,
+        "meta": {
+            "request_id": Uuid::new_v4().to_string(),
+            "context_dir": context_dir.display().to_string(),
+            "db_path": store.db_path().display().to_string(),
+            "hybrid_requested": hybrid_enabled,
+        }
     });
     print_json(&output)?;
     Ok(())
@@ -559,6 +770,41 @@ fn resolve_catalog_kind(
     match value {
         Some(raw) => raw.parse::<CatalogKind>(),
         None => Ok(default),
+    }
+}
+
+fn map_context_error(error: QuarryContextError) -> QuarryExecError {
+    match error {
+        QuarryContextError::InvalidInput(message) => QuarryExecError::Config(message),
+        QuarryContextError::Database(message) => QuarryExecError::Execution(message),
+    }
+}
+
+fn resolve_context_dir(value: Option<PathBuf>) -> Result<PathBuf, QuarryExecError> {
+    if let Some(path) = value {
+        return Ok(path);
+    }
+
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            QuarryExecError::Config(
+                "Context directory not provided and HOME/USERPROFILE is not set".to_string(),
+            )
+        })?;
+
+    Ok(home.join(".quarry").join("context"))
+}
+
+fn parse_hybrid(value: &str) -> Result<bool, QuarryExecError> {
+    match value {
+        "on" | "true" | "1" => Ok(true),
+        "off" | "false" | "0" => Ok(false),
+        other => Err(QuarryExecError::Config(format!(
+            "Invalid --hybrid value '{}'; expected on|off",
+            other
+        ))),
     }
 }
 

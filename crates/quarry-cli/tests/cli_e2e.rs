@@ -57,6 +57,29 @@ fn write_query_by_region(dir: &tempfile::TempDir) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn write_filesystem_sync_config(dir: &tempfile::TempDir, docs_rel_dir: &str) -> String {
+    let config_path = dir.path().join("sync_config.json");
+    let docs_path = dir.path().join(docs_rel_dir);
+    fs::create_dir_all(&docs_path).expect("create docs dir");
+    fs::write(
+        docs_path.join("sales_playbook.txt"),
+        "Enterprise revenue playbook for EMEA and NA teams with tenant-safe guidance.",
+    )
+    .expect("write docs file");
+
+    let config = serde_json::json!({
+        "paths": [docs_path.to_string_lossy().to_string()],
+        "recursive": true,
+        "extensions": ["txt"]
+    });
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).expect("json"),
+    )
+    .expect("write config");
+    config_path.to_string_lossy().to_string()
+}
+
 #[test]
 fn validate_command_succeeds() {
     let (_dir, model, _query) = write_fixture_files();
@@ -203,4 +226,210 @@ fn tenant_isolation_produces_distinct_region_aggregates() {
         .stdout(predicate::str::contains("\"revenue\": 500.0"))
         .stdout(predicate::str::contains("\"tenant_id\": \"tenant_999\""))
         .stdout(predicate::str::contains("\"orders.region\": \"EU\"").not());
+}
+
+#[test]
+fn collection_create_and_list_are_tenant_scoped() {
+    let dir = tempdir().expect("tempdir");
+    let context_dir = dir.path().join("context");
+
+    let mut create_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    create_cmd
+        .arg("collection")
+        .arg("create")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--name")
+        .arg("sales_docs")
+        .arg("--description")
+        .arg("Sales docs")
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    create_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"ok\""))
+        .stdout(predicate::str::contains("\"name\": \"sales_docs\""))
+        .stdout(predicate::str::contains("\"tenant_id\": \"tenant_123\""));
+
+    let mut list_123_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    list_123_cmd
+        .arg("collection")
+        .arg("list")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    list_123_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"collections\""))
+        .stdout(predicate::str::contains("\"name\": \"sales_docs\""))
+        .stdout(predicate::str::contains("\"tenant_id\": \"tenant_123\""));
+
+    let mut list_999_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    list_999_cmd
+        .arg("collection")
+        .arg("list")
+        .arg("--tenant")
+        .arg("tenant_999")
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    list_999_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"collections\": []"));
+}
+
+#[test]
+fn collection_create_rejects_duplicates_for_same_tenant() {
+    let dir = tempdir().expect("tempdir");
+    let context_dir = dir.path().join("context");
+
+    let mut create_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    create_cmd
+        .arg("collection")
+        .arg("create")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--name")
+        .arg("sales_docs")
+        .arg("--context-dir")
+        .arg(&context_dir);
+    create_cmd.assert().success();
+
+    let mut duplicate_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    duplicate_cmd
+        .arg("collection")
+        .arg("create")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--name")
+        .arg("sales_docs")
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    duplicate_cmd
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("\"code\": \"CONFIG_ERROR\""))
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn sync_and_search_filesystem_connector_work_end_to_end() {
+    let dir = tempdir().expect("tempdir");
+    let context_dir = dir.path().join("context");
+    let config_path = write_filesystem_sync_config(&dir, "docs");
+
+    let mut create_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    create_cmd
+        .arg("collection")
+        .arg("create")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--name")
+        .arg("sales_docs")
+        .arg("--context-dir")
+        .arg(&context_dir);
+    create_cmd.assert().success();
+
+    let mut sync_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    sync_cmd
+        .arg("sync")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--collection")
+        .arg("sales_docs")
+        .arg("--connector")
+        .arg("filesystem")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    sync_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"ok\""))
+        .stdout(predicate::str::contains("\"documents_seen\": 1"))
+        .stdout(predicate::str::contains("\"documents_indexed\": 1"));
+
+    let mut search_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    search_cmd
+        .arg("search")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--collection")
+        .arg("sales_docs")
+        .arg("--query")
+        .arg("revenue")
+        .arg("--top-k")
+        .arg("5")
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    search_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"ok\""))
+        .stdout(predicate::str::contains("\"hits\""))
+        .stdout(predicate::str::contains("\"tenant_id\": \"tenant_123\""));
+}
+
+#[test]
+fn sync_second_run_reports_skipped_documents() {
+    let dir = tempdir().expect("tempdir");
+    let context_dir = dir.path().join("context");
+    let config_path = write_filesystem_sync_config(&dir, "docs");
+
+    let mut create_cmd = Command::cargo_bin("quarry").expect("binary should build");
+    create_cmd
+        .arg("collection")
+        .arg("create")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--name")
+        .arg("sales_docs")
+        .arg("--context-dir")
+        .arg(&context_dir);
+    create_cmd.assert().success();
+
+    let mut first_sync = Command::cargo_bin("quarry").expect("binary should build");
+    first_sync
+        .arg("sync")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--collection")
+        .arg("sales_docs")
+        .arg("--connector")
+        .arg("filesystem")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--context-dir")
+        .arg(&context_dir);
+    first_sync.assert().success();
+
+    let mut second_sync = Command::cargo_bin("quarry").expect("binary should build");
+    second_sync
+        .arg("sync")
+        .arg("--tenant")
+        .arg("tenant_123")
+        .arg("--collection")
+        .arg("sales_docs")
+        .arg("--connector")
+        .arg("filesystem")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--context-dir")
+        .arg(&context_dir);
+
+    second_sync
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"documents_skipped\": 1"));
 }

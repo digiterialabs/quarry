@@ -22,6 +22,7 @@ uuid.workspace = true
 
 quarry-core = { path = "../quarry-core" }
 quarry-exec = { path = "../quarry-exec" }
+quarry-context = { path = "../quarry-context" }
 
 [dev-dependencies]
 assert_cmd = "2"
