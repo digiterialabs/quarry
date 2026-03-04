@@ -13,6 +13,7 @@ pub struct SemanticModel {
     pub schema_version: String,
     pub entities: Vec<Entity>,
     pub metrics: Vec<MetricDefinition>,
+    pub pre_aggregations: Vec<PreAggregationDefinition>,
 }
 
 impl Default for SemanticModel {
@@ -21,6 +22,7 @@ impl Default for SemanticModel {
             schema_version: "v1".to_string(),
             entities: Vec::new(),
             metrics: Vec::new(),
+            pre_aggregations: Vec::new(),
         }
     }
 }
@@ -193,6 +195,52 @@ pub struct MetricFilter {
     pub field: String,
     pub op: String,
     pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreAggregationDefinition {
+    pub name: String,
+    pub metrics: Vec<String>,
+    pub dimensions: Vec<String>,
+    pub filters: Vec<MetricFilter>,
+    pub refresh: PreAggregationRefreshPolicy,
+}
+
+impl Default for PreAggregationDefinition {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            metrics: Vec::new(),
+            dimensions: Vec::new(),
+            filters: Vec::new(),
+            refresh: PreAggregationRefreshPolicy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreAggregationRefreshPolicy {
+    pub mode: PreAggregationRefreshMode,
+    pub interval_seconds: u64,
+}
+
+impl Default for PreAggregationRefreshPolicy {
+    fn default() -> Self {
+        Self {
+            mode: PreAggregationRefreshMode::Interval,
+            interval_seconds: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PreAggregationRefreshMode {
+    Manual,
+    #[default]
+    Interval,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,6 +451,171 @@ impl SemanticModel {
             }
         }
 
+        let mut seen_pre_aggregations = HashSet::new();
+        for pre_aggregation in &self.pre_aggregations {
+            if pre_aggregation.name.trim().is_empty() {
+                issues.push(ValidationIssue {
+                    code: "EMPTY_PRE_AGGREGATION_NAME",
+                    path: "pre_aggregations[].name".to_string(),
+                    message: "Pre-aggregation name cannot be empty".to_string(),
+                    suggestions: vec!["Set pre_aggregation.name".to_string()],
+                });
+                continue;
+            }
+
+            if !seen_pre_aggregations.insert(pre_aggregation.name.clone()) {
+                issues.push(ValidationIssue {
+                    code: "DUPLICATE_PRE_AGGREGATION",
+                    path: format!("pre_aggregations.{}", pre_aggregation.name),
+                    message: format!(
+                        "Duplicate pre-aggregation '{}' definition",
+                        pre_aggregation.name
+                    ),
+                    suggestions: vec!["Use unique pre-aggregation names".to_string()],
+                });
+            }
+
+            if pre_aggregation.metrics.is_empty() {
+                issues.push(ValidationIssue {
+                    code: "EMPTY_PRE_AGGREGATION_METRICS",
+                    path: format!("pre_aggregations.{}.metrics", pre_aggregation.name),
+                    message: "Pre-aggregation must define at least one metric".to_string(),
+                    suggestions: self.metrics.iter().map(|m| m.name.clone()).collect(),
+                });
+                continue;
+            }
+
+            let mut base_entity: Option<&str> = None;
+            for metric_name in &pre_aggregation.metrics {
+                let Some(metric) = self.metric_by_name(metric_name) else {
+                    issues.push(ValidationIssue {
+                        code: "UNKNOWN_PRE_AGGREGATION_METRIC",
+                        path: format!(
+                            "pre_aggregations.{}.metrics.{}",
+                            pre_aggregation.name, metric_name
+                        ),
+                        message: format!(
+                            "Pre-aggregation '{}' references unknown metric '{}'",
+                            pre_aggregation.name, metric_name
+                        ),
+                        suggestions: self.metrics.iter().map(|m| m.name.clone()).collect(),
+                    });
+                    continue;
+                };
+
+                if base_entity.is_none() {
+                    base_entity = Some(metric.entity.as_str());
+                } else if base_entity != Some(metric.entity.as_str()) {
+                    issues.push(ValidationIssue {
+                        code: "CROSS_ENTITY_PRE_AGGREGATION_METRICS",
+                        path: format!("pre_aggregations.{}.metrics", pre_aggregation.name),
+                        message: format!(
+                            "Pre-aggregation '{}' mixes metrics across entities",
+                            pre_aggregation.name
+                        ),
+                        suggestions: vec![
+                            "Use metrics from one base entity per pre-aggregation".to_string()
+                        ],
+                    });
+                }
+            }
+
+            for dimension_ref in &pre_aggregation.dimensions {
+                let Some((entity_name, dim_name)) = self.parse_ref(dimension_ref) else {
+                    issues.push(ValidationIssue {
+                        code: "INVALID_PRE_AGGREGATION_DIMENSION_REF",
+                        path: format!(
+                            "pre_aggregations.{}.dimensions.{}",
+                            pre_aggregation.name, dimension_ref
+                        ),
+                        message: format!(
+                            "Pre-aggregation dimension '{}' must be <entity>.<dimension>",
+                            dimension_ref
+                        ),
+                        suggestions: vec!["Example: orders.created_at".to_string()],
+                    });
+                    continue;
+                };
+
+                if self.entity_dimension(entity_name, dim_name).is_none() {
+                    issues.push(ValidationIssue {
+                        code: "UNKNOWN_PRE_AGGREGATION_DIMENSION",
+                        path: format!(
+                            "pre_aggregations.{}.dimensions.{}",
+                            pre_aggregation.name, dimension_ref
+                        ),
+                        message: format!(
+                            "Pre-aggregation '{}' references unknown dimension '{}'",
+                            pre_aggregation.name, dimension_ref
+                        ),
+                        suggestions: self
+                            .entities
+                            .iter()
+                            .flat_map(|entity| {
+                                entity
+                                    .dimensions
+                                    .iter()
+                                    .map(move |dim| format!("{}.{}", entity.name, dim.name))
+                            })
+                            .collect(),
+                    });
+                }
+            }
+
+            for filter in &pre_aggregation.filters {
+                let Some((entity_name, field_name)) = self.parse_ref(&filter.field) else {
+                    issues.push(ValidationIssue {
+                        code: "INVALID_PRE_AGGREGATION_FILTER_REF",
+                        path: format!(
+                            "pre_aggregations.{}.filters.{}",
+                            pre_aggregation.name, filter.field
+                        ),
+                        message: format!(
+                            "Pre-aggregation filter '{}' must be <entity>.<field>",
+                            filter.field
+                        ),
+                        suggestions: vec!["Example: orders.status".to_string()],
+                    });
+                    continue;
+                };
+
+                let known_dimension = self.entity_dimension(entity_name, field_name).is_some();
+                let known_measure = self.entity_measure(entity_name, field_name).is_some();
+                if !known_dimension && !known_measure {
+                    issues.push(ValidationIssue {
+                        code: "UNKNOWN_PRE_AGGREGATION_FILTER_FIELD",
+                        path: format!(
+                            "pre_aggregations.{}.filters.{}",
+                            pre_aggregation.name, filter.field
+                        ),
+                        message: format!(
+                            "Pre-aggregation '{}' references unknown filter field '{}'",
+                            pre_aggregation.name, filter.field
+                        ),
+                        suggestions: vec![
+                            "Use <entity>.<dimension> or <entity>.<measure>".to_string()
+                        ],
+                    });
+                }
+            }
+
+            if matches!(
+                pre_aggregation.refresh.mode,
+                PreAggregationRefreshMode::Interval
+            ) && pre_aggregation.refresh.interval_seconds == 0
+            {
+                issues.push(ValidationIssue {
+                    code: "INVALID_PRE_AGGREGATION_REFRESH_INTERVAL",
+                    path: format!(
+                        "pre_aggregations.{}.refresh.interval_seconds",
+                        pre_aggregation.name
+                    ),
+                    message: "interval refresh mode requires interval_seconds > 0".to_string(),
+                    suggestions: vec!["Set interval_seconds to at least 1".to_string()],
+                });
+            }
+        }
+
         for entity in &self.entities {
             for rel in &entity.relationships {
                 if self.entity_by_name(&rel.to).is_none() {
@@ -432,6 +645,12 @@ impl SemanticModel {
 
     pub fn metric_by_name(&self, name: &str) -> Option<&MetricDefinition> {
         self.metrics.iter().find(|metric| metric.name == name)
+    }
+
+    pub fn pre_aggregation_by_name(&self, name: &str) -> Option<&PreAggregationDefinition> {
+        self.pre_aggregations
+            .iter()
+            .find(|entry| entry.name == name)
     }
 
     pub fn entity_dimension(&self, entity_name: &str, dimension_name: &str) -> Option<&Dimension> {
@@ -470,5 +689,67 @@ impl SemanticModel {
             }
         }
         map
+    }
+
+    pub fn export_catalog(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": self.schema_version,
+            "entities": self.entities.iter().map(|entity| {
+                serde_json::json!({
+                    "name": entity.name,
+                    "table": entity.table,
+                    "tenant_column": entity.tenant_column,
+                    "primary_key": entity.primary_key,
+                    "dimensions": entity.dimensions.iter().map(|dim| {
+                        serde_json::json!({
+                            "name": dim.name,
+                            "column": dim.column,
+                            "kind": format!("{:?}", dim.kind).to_lowercase(),
+                            "data_type": format!("{:?}", dim.data_type).to_lowercase(),
+                        })
+                    }).collect::<Vec<_>>(),
+                    "measures": entity.measures.iter().map(|measure| {
+                        serde_json::json!({
+                            "name": measure.name,
+                            "column": measure.column,
+                            "agg": format!("{:?}", measure.agg).to_lowercase(),
+                            "data_type": format!("{:?}", measure.data_type).to_lowercase(),
+                        })
+                    }).collect::<Vec<_>>(),
+                    "relationships": entity.relationships.iter().map(|rel| {
+                        serde_json::json!({
+                            "to": rel.to,
+                            "kind": format!("{:?}", rel.kind).to_lowercase(),
+                            "local_key": rel.local_key,
+                            "remote_key": rel.remote_key,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>(),
+            "metrics": self.metrics.iter().map(|metric| {
+                serde_json::json!({
+                    "name": metric.name,
+                    "kind": format!("{:?}", metric.kind).to_lowercase(),
+                    "entity": metric.entity,
+                    "measure": metric.measure,
+                    "expression": metric.expression,
+                    "numerator": metric.numerator,
+                    "denominator": metric.denominator,
+                    "filter": metric.filter,
+                })
+            }).collect::<Vec<_>>(),
+            "pre_aggregations": self.pre_aggregations.iter().map(|preagg| {
+                serde_json::json!({
+                    "name": preagg.name,
+                    "metrics": preagg.metrics,
+                    "dimensions": preagg.dimensions,
+                    "filters": preagg.filters,
+                    "refresh": {
+                        "mode": format!("{:?}", preagg.refresh.mode).to_lowercase(),
+                        "interval_seconds": preagg.refresh.interval_seconds,
+                    }
+                })
+            }).collect::<Vec<_>>(),
+        })
     }
 }

@@ -1,44 +1,139 @@
-# Claude Code Integration
+# Claude Code Revenue Quickstart
 
-Quarry supports Claude Code through project-local MCP config.
+This guide gives you a copy-paste flow that proves Claude Code can use Quarry MCP tools to
+produce tenant-isolated analytics.
 
-## Install
+## What this example proves
 
-From repository root:
+Claude Code can call Quarry MCP tools and return revenue by region for `tenant_123` from the
+bundled local fixture data.
+
+## Prerequisites
+
+- `python3` and `cargo` installed
+- Quarry repository checked out
+- Commands run from repo root
+
+## Install Claude Code MCP integration
 
 ```bash
 python3 scripts/install_integrations.py --claude
 ```
 
-This generates `.mcp.json` in the project root with a `quarry` server entry.
+This writes a project-local `.mcp.json` with a `quarry` server entry.
 
-## Generated config
+Then reopen the project in Claude Code so MCP servers are reloaded.
+
+## Quick environment check (before Claude)
+
+```bash
+cargo run -q -p quarry-cli -- validate --model models/example/model.yml
+```
+
+Expected result includes:
+
+- `"schema_version": "v1"`
+- `"status": "ok"`
+
+## Canonical query payload
+
+Quarry query JSON for this quickstart:
 
 ```json
 {
-  "mcpServers": {
-    "quarry": {
-      "command": "python3",
-      "args": ["/absolute/path/to/quarry/tools/mcp/quarry_mcp_server.py"]
-    }
-  }
+  "metrics": ["revenue"],
+  "dimensions": [{ "name": "orders.region" }],
+  "filters": [{ "field": "orders.status", "op": "eq", "value": "completed" }],
+  "order_by": [{ "field": "revenue", "direction": "desc" }],
+  "limit": 1000
 }
 ```
 
-## Verify
+Canonical file version: `models/example/query_by_region.json`.
 
-1. Reopen the project in Claude Code.
-2. Ask: "Use Quarry to validate models/example/model.yml."
-3. Ask: "Run Quarry query for tenant_123 and summarize revenue by region."
+## Copy-paste prompt sequence for Claude Code
 
-## Prompt template
+### Prompt 1: validate model
 
 ```text
-Use the quarry_query MCP tool with:
-- model_path: models/example/model.yml
-- catalog: local
-- tenant_id: tenant_123
-- local_data_dir: models/example/data
-- query_json metrics=["revenue"], dimensions=[{"name":"customers.region"}], filter orders.status=completed.
-Then summarize totals by region.
+Use the `quarry_validate` MCP tool with:
+{
+  "model_path": "models/example/model.yml"
+}
+Return whether status is ok and any validation issues.
 ```
+
+### Prompt 2: run revenue-by-region query
+
+```text
+Use the `quarry_query` MCP tool with:
+{
+  "model_path": "models/example/model.yml",
+  "catalog": "local",
+  "tenant_id": "tenant_123",
+  "local_data_dir": "models/example/data",
+  "query_json": {
+    "metrics": ["revenue"],
+    "dimensions": [{ "name": "orders.region" }],
+    "filters": [{ "field": "orders.status", "op": "eq", "value": "completed" }],
+    "order_by": [{ "field": "revenue", "direction": "desc" }],
+    "limit": 1000
+  }
+}
+Return the raw JSON response.
+```
+
+### Prompt 3: summarize and verify
+
+```text
+From the previous Quarry JSON result:
+1) Output a table with columns `region` and `revenue`
+2) Add a total revenue line
+3) Verify expected values EU=250.0 and NA=100.0 (total 350.0)
+4) If any value differs, report a mismatch
+```
+
+### Prompt 4 (optional): explain plan for debugging
+
+```text
+Use the `quarry_explain` MCP tool with the same model_path, catalog, tenant_id, local_data_dir,
+and query_json. Summarize the tenant filter and grouping in one short paragraph.
+```
+
+## Strict expected output
+
+For `tenant_123`, this quickstart should return exactly:
+
+- `EU: 250.0`
+- `NA: 100.0`
+- total revenue: `350.0`
+
+Expected response metadata includes:
+
+- `tenant_id = "tenant_123"`
+- `catalog = "local"`
+
+## Pass/fail checklist
+
+- Claude Code can see Quarry MCP tools (`quarry_validate`, `quarry_query`, `quarry_explain`)
+- `quarry_validate` returns `status: ok`
+- `quarry_query` returns `status: ok`
+- Query rows match expected values exactly
+- Meta shows `tenant_id: tenant_123` and `catalog: local`
+
+## Troubleshooting
+
+- `.mcp.json` missing:
+  - Re-run `python3 scripts/install_integrations.py --claude` from repo root.
+- `.mcp.json` malformed:
+  - Fix JSON syntax or delete and regenerate with installer.
+- Claude does not show Quarry tools:
+  - Reopen the project/workspace to reload MCP.
+- Python not found:
+  - Ensure `python3` is installed and available on `PATH`.
+- First query is slow:
+  - `cargo run` compiles on first use; reruns are faster.
+- Query input error:
+  - `quarry_query` requires exactly one of `query_json` or `query_file`.
+- Wrong dimension:
+  - Use `orders.region` for this model, not `customers.region`.

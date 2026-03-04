@@ -5,6 +5,7 @@ Checks:
 - initialize handshake
 - tools/list contains 3 expected tools
 - tools/call quarry_validate succeeds on example model
+- tools/call quarry_query succeeds on example query fixture
 """
 
 from __future__ import annotations
@@ -102,6 +103,46 @@ def main() -> int:
         text = result["content"][0]["text"]
         payload = json.loads(text)
         expect(payload.get("status") == "ok", "quarry_validate status was not ok")
+
+        send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "quarry_query",
+                    "arguments": {
+                        "model_path": "models/example/model.yml",
+                        "catalog": "local",
+                        "tenant_id": "tenant_123",
+                        "local_data_dir": "models/example/data",
+                        "query_file": "models/example/query_by_region.json",
+                        "format": "json",
+                    },
+                },
+            },
+        )
+        query = recv(proc)
+        expect("result" in query, "quarry_query did not return result")
+        query_result = query["result"]
+        expect(not query_result.get("isError", False), "quarry_query returned error")
+        query_payload = json.loads(query_result["content"][0]["text"])
+        expect(query_payload.get("status") == "ok", "quarry_query status was not ok")
+
+        rows = query_payload.get("data", {}).get("rows", [])
+        expect(len(rows) == 2, f"expected 2 rows, got {len(rows)}")
+        by_region = {row.get("orders.region"): row.get("revenue") for row in rows}
+        expect(by_region.get("EU") == 250.0, f"EU revenue mismatch: {by_region.get('EU')}")
+        expect(by_region.get("NA") == 100.0, f"NA revenue mismatch: {by_region.get('NA')}")
+        expect(
+            round(sum(by_region.values()), 4) == 350.0,
+            f"total revenue mismatch: {sum(by_region.values())}",
+        )
+
+        meta = query_payload.get("meta", {})
+        expect(meta.get("tenant_id") == "tenant_123", "tenant_id meta mismatch")
+        expect(meta.get("catalog") == "local", "catalog meta mismatch")
 
         print("MCP smoke test passed")
         return 0

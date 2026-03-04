@@ -62,3 +62,15 @@ metrics:
       field: orders.status
       op: eq
       value: completed
+
+pre_aggregations:
+  - name: revenue_by_region_completed
+    metrics: ["revenue"]
+    dimensions: ["orders.region"]
+    filters:
+      - field: orders.status
+        op: eq
+        value: completed
+    refresh:
+      mode: interval
+      interval_seconds: 300

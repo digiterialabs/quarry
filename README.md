@@ -20,10 +20,12 @@ It is designed for ephemeral, per-query compute: no long-running cluster and no 
   - `quarry validate --model <path>`
   - `quarry query --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file> --format json`
   - `quarry explain --model <path> --catalog <local|glue> --tenant <id> [--local-data-dir <path>] --input <file>`
+  - `quarry serve --model <path> [--catalog <local|glue>] [--local-data-dir <path>] [--host 127.0.0.1] [--port 4000]`
 - Semantic model in YAML (`entities`, `dimensions`, `measures`, `metrics`)
 - Semantic query JSON input contract
 - DataFusion logical/optimized/physical planning
 - Row-level tenant isolation
+- Pre-aggregation definitions in semantic model (`pre_aggregations`)
 - Local adapter sources:
   - CSV/Parquet files
   - Iceberg static table metadata (via `physical.format: iceberg` + `metadata_path`)
@@ -63,6 +65,64 @@ Expected aggregate for `tenant_123`:
 
 - `EU`: `250.0`
 - `NA`: `100.0`
+
+## HTTP API Mode
+
+Run Quarry as a local API:
+
+```bash
+quarry serve \
+  --model models/example/model.yml \
+  --catalog local \
+  --local-data-dir models/example/data \
+  --host 127.0.0.1 \
+  --port 4000
+```
+
+Key endpoints:
+
+- `GET /health`
+- `GET /validate`
+- `POST /query`
+- `POST /explain`
+- `GET /semantic/export`
+- `GET /preaggregations`
+- `POST /preaggregations/match`
+- `POST /orchestration/warmup`
+- `POST /orchestration/refresh`
+- `POST /orchestration/invalidate`
+
+Example API query:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/query \
+  -H 'content-type: application/json' \
+  -d '{
+    "tenant_id": "tenant_123",
+    "catalog": "local",
+    "query": {
+      "metrics": ["revenue"],
+      "dimensions": [{"name":"orders.region"}],
+      "filters": [{"field":"orders.status","op":"eq","value":"completed"}],
+      "order_by": [{"field":"revenue","direction":"desc"}],
+      "limit": 1000
+    }
+  }'
+```
+
+Export semantic catalog for BI sync:
+
+```bash
+curl -s http://127.0.0.1:4000/semantic/export
+```
+
+Materialize a pre-aggregation:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/orchestration/warmup \
+  -H 'content-type: application/json' \
+  -d '{"tenant_id":"tenant_123","catalog":"local","pre_aggregation":"revenue_by_region_completed"}'
+```
 
 ## Iceberg on S3/MinIO (Static Metadata Path)
 
@@ -112,6 +172,16 @@ Docs:
 - [Claude Code](docs/integrations/claude-code.md)
 - [Cursor](docs/integrations/cursor.md)
 
+Claude Code quickstart:
+
+```bash
+python3 scripts/install_integrations.py --claude
+```
+
+Then ask Claude Code to run the Quarry revenue-by-region quickstart for `tenant_123`.
+Detailed walkthrough: [docs/integrations/claude-code.md](docs/integrations/claude-code.md).  
+Expected result teaser: `EU 250.0`, `NA 100.0`.
+
 ## Observability in Query Meta
 
 Each success envelope now includes:
@@ -136,6 +206,7 @@ python3 tests/mcp_smoke.py
 
 - Query execution path is single-entity scoped today for dimensions/filters
 - Glue adapter currently enforces AWS config and uses static-source registration boundary
+- API-mode pre-aggregation materialization state is process-local (in-memory)
 - Path-level tenant isolation remains out of scope for v0.1.x
 
 ## License

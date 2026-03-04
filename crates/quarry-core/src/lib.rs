@@ -5,7 +5,7 @@ pub mod resolve;
 pub mod tenant;
 
 pub use errors::{ErrorCode, QuarryCoreError, ValidationIssue};
-pub use model::{MetricKind, SemanticModel};
+pub use model::{MetricKind, PreAggregationDefinition, PreAggregationRefreshMode, SemanticModel};
 pub use query::SemanticQuery;
 pub use resolve::{
     resolve_to_logical_plan, resolve_to_logical_plan_with_sources,
